@@ -8,6 +8,11 @@ st.set_page_config(page_title="Otimização de Malha", layout="wide")
 st.title("📦 Análise de Otimização de Transportes")
 st.write("Faça o upload da sua planilha CSV para gerar os cenários otimizados.")
 
+# Menu lateral para estipular as metas dinamicamente
+st.sidebar.header("🎯 Parâmetros de Otimização")
+meta_ns = st.sidebar.slider("Meta de Nível de Serviço (%)", min_value=0, max_value=100, value=95) / 100.0
+limite_prazo = st.sidebar.number_input("Prazo Máximo Aceitável (Dias)", min_value=1, value=7)
+
 # ==========================================
 # 1. CONFIGURAÇÕES E LIMITES DE NEGÓCIO
 # ==========================================
@@ -64,9 +69,15 @@ def avaliar_cenarios_cep(group):
             ns, ajuste = row[c['coluna']], c['ajuste']
             prazo_final = prazo_orig + ajuste
             if prazo_final < 0: continue
+            
             if cmu <= limite_cmu:
-                if ns >= 96.5: cenarios_validos.append((prazo_final, ns, cmu, transp, row['NS Atual']))
-                cenarios_fallback.append((prazo_final, ns, cmu, transp, row['NS Atual']))
+                # Conecta com as variáveis do menu lateral
+                if ns >= (meta_ns * 100) and prazo_final <= limite_prazo: 
+                    cenarios_validos.append((prazo_final, ns, cmu, transp, row['NS Atual']))
+                
+                # O fallback também só deve aceitar cenários dentro do prazo limite estipulado
+                if prazo_final <= limite_prazo:
+                    cenarios_fallback.append((prazo_final, ns, cmu, transp, row['NS Atual']))
 
     if cenarios_validos:
         cenarios_validos.sort(key=lambda x: (x[0], -x[1]))
