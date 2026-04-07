@@ -11,7 +11,7 @@ st.write("Faça o upload da sua planilha CSV para gerar os cenários otimizados.
 # Menu lateral para estipular as metas dinamicamente
 st.sidebar.header("🎯 Parâmetros de Otimização")
 meta_ns = st.sidebar.slider("Meta de Nível de Serviço (%)", min_value=0, max_value=100, value=95) / 100.0
-limite_prazo = st.sidebar.number_input("Prazo Máximo Aceitável (Dias)", min_value=1, value=7)
+limite_prazo = st.sidebar.number_input("Prazo Máximo Aceitável (Dias Úteis)", min_value=1, value=7)
 
 # ==========================================
 # 1. CONFIGURAÇÕES E LIMITES DE NEGÓCIO
@@ -54,7 +54,7 @@ def limpar_numero(valor):
     except:
         return 0.0
 
-# Funções do seu motor mantidas intactas
+# Funções do seu motor mantidas intactas, mas conectadas ao menu lateral
 def avaliar_cenarios_cep(group):
     vol_total_cep = group['Qtd Pedidos'].sum()
     transp_ant_row = group.sort_values(by='Qtd Pedidos', ascending=False).iloc[0]
@@ -101,7 +101,8 @@ def avaliar_cenarios_cep(group):
         'NS Atual': ns_atual_sel, 'NS Projetado': ns_proj, 'Ação Sugerida': acao
     })
 
-def calcular_agregacao_executiva(group, colunas_chave):
+def calcular_agregacao_executiva(group):
+    # A correção acontece aqui: removemos a injeção manual das "colunas chave"
     peso_ant, peso_sel = group['qtd pedidos transp anterior'], group['Qtd Pedidos Transportadora Selecionada']
     vol_ant_total, vol_sel_total = peso_ant.sum(), peso_sel.sum()
     lider_ant = group.groupby('Transportadora Anterior')['qtd pedidos transp anterior'].sum().idxmax() if vol_ant_total > 0 else group['Transportadora Anterior'].iloc[0]
@@ -123,7 +124,6 @@ def calcular_agregacao_executiva(group, colunas_chave):
         'Qtd Pedidos Transportadora Selecionada': vol_sel_total, 'CMU transportadora selecionada': cmu_sel,
         'NS Atual': ns_atual, 'NS Projetado': ns_proj, 'Ação Sugerida': acao
     }
-    for k in colunas_chave: res[k] = group[k].iloc[0]
     return pd.Series(res)
 
 # ==========================================
@@ -134,28 +134,24 @@ uploaded_file = st.file_uploader("Selecione o arquivo CSV", type=["csv"])
 if uploaded_file is not None:
     with st.spinner('Lendo e limpando os dados... Isso pode levar alguns segundos.'):
         
-        # Leitura inicial do CSV com low_memory=False para evitar alertas do Pandas
         df = pd.read_csv(uploaded_file, sep=';', decimal=',', encoding='utf-8', low_memory=False)
 
-        # Aplica a função blindada de limpeza nas colunas de NS
         colunas_ns = [c['coluna'] for c in CENARIOS]
         for col in colunas_ns:
             if col in df.columns:
                 df[col] = df[col].apply(limpar_numero)
 
-        # Aplica a limpeza no CMU
         if 'CMU' in df.columns:
             df['CMU'] = df['CMU'].apply(limpar_numero)
             
-        # Aplica a limpeza no Prazo Prometido
         if 'Prazo Prometido' in df.columns:
             df['Prazo Prometido'] = df['Prazo Prometido'].apply(limpar_numero)
 
-        # Roda o motor
-        df_cep = df.groupby('CEP', as_index=False).apply(avaliar_cenarios_cep).reset_index(drop=True)
-        df_regiao = df_cep.groupby('Região', as_index=False).apply(lambda g: calcular_agregacao_executiva(g, ['Região'])).reset_index(drop=True)
-        df_uf = df_cep.groupby('UF', as_index=False).apply(lambda g: calcular_agregacao_executiva(g, ['UF'])).reset_index(drop=True)
-        df_cidade = df_cep.groupby(['UF', 'Cidade'], as_index=False).apply(lambda g: calcular_agregacao_executiva(g, ['UF', 'Cidade'])).reset_index(drop=True)
+        # Usamos o reset_index() ao invés do as_index=False para garantir compatibilidade com as versões mais novas do Pandas
+        df_cep = df.groupby('CEP').apply(avaliar_cenarios_cep).reset_index()
+        df_regiao = df_cep.groupby('Região').apply(calcular_agregacao_executiva).reset_index()
+        df_uf = df_cep.groupby('UF').apply(calcular_agregacao_executiva).reset_index()
+        df_cidade = df_cep.groupby(['UF', 'Cidade']).apply(calcular_agregacao_executiva).reset_index()
 
         # Cálculos Globais para a Tela
         vol_total = df_cep['Qtd Pedidos Transportadora Selecionada'].sum()
