@@ -11,7 +11,17 @@ st.write("Faça o upload da sua planilha CSV para gerar os cenários otimizados 
 
 # Menu lateral para estipular as metas dinamicamente
 st.sidebar.header("🎯 Parâmetros de Otimização")
-meta_ns = st.sidebar.slider("Meta de Nível de Serviço (%)", min_value=0, max_value=100, value=95) / 100.0
+
+# O input de NS agora aceita digitação e números decimais (ex: 95.5)
+meta_ns = st.sidebar.number_input(
+    "Meta de Nível de Serviço (%)", 
+    min_value=0.0, 
+    max_value=100.0, 
+    value=95.0, 
+    step=0.1,
+    format="%.2f",
+    help="Digite o valor exato da meta de Nível de Serviço. Aceita casas decimais (ex: 95.5)."
+) / 100.0
 
 limite_prazo = st.sidebar.number_input(
     "Prazo Máximo Aceitável (Média Ponderada)", 
@@ -22,7 +32,7 @@ limite_prazo = st.sidebar.number_input(
     help="O motor sacrificará o Nível de Serviço apenas onde o impacto for menor."
 )
 
-st.sidebar.info(f"O motor tentará atingir **{meta_ns*100:.0f}% de NS**. Se a média passar de **{limite_prazo:.2f} dias**, ele reduzirá inteligentemente os prazos.")
+st.sidebar.info(f"O motor tentará atingir **{meta_ns*100:.2f}% de NS**. Se a média passar de **{limite_prazo:.2f} dias**, ele reduzirá inteligentemente os prazos.")
 
 # ==========================================
 # 1. CONFIGURAÇÕES E LIMITES DE NEGÓCIO
