@@ -63,7 +63,6 @@ CENARIOS = [
     {'coluna': 'NS (+3 dias)', 'ajuste': 3}
 ]
 
-# Lista padrão de capitais brasileiras para filtragem cega
 CAPITAIS_BR = [
     "SÃO PAULO", "RIO DE JANEIRO", "BELO HORIZONTE", "VITÓRIA", "CURITIBA",
     "FLORIANÓPOLIS", "PORTO ALEGRE", "CAMPO GRANDE", "CUIABÁ", "GOIÂNIA",
@@ -73,7 +72,6 @@ CAPITAIS_BR = [
 ]
 
 def normalizar_texto(txt):
-    """Remove acentos e deixa maiúsculo para garantir o match das capitais"""
     if pd.isna(txt): return ""
     return ''.join(c for c in unicodedata.normalize('NFD', str(txt)) if unicodedata.category(c) != 'Mn').upper()
 
@@ -145,7 +143,6 @@ def mapear_pareto_base(df):
                        'cmu': transp_ant_row['CMU'], 'transp': transp_ant_row['Transportador'], 
                        'ns_atual': transp_ant_row['NS Atual'], 'ajuste': 0}]
         else:
-            # A ordenação inicial já garante o MENOR prazo e MENOR CMU para o mesmo NS
             valid_scenarios.sort(key=lambda x: (x['prazo'], -x['ns'], x['cmu']))
             pareto = []
             best_ns_so_far = -1
@@ -173,13 +170,25 @@ def calcular_agregacao_executiva(group):
     def mp(col, pesos, total): 
         return (group[col] * pesos).sum() / total if total > 0 else group[col].mean()
 
+    prazo_ant = mp('Prazo Transportadora Anterior', peso_ant, vol_ant_total)
+    prazo_sel = mp('Prazo Transportadora Selecionada', peso_sel, vol_sel_total)
+    
+    # Nova lógica restabelecida para calcular Ação Sugerida no nível agregado
+    diff_prazo = prazo_ant - prazo_sel
+    if diff_prazo > 0.05: # Pequena margem devido a arredondamentos de média ponderada
+        acao = f"Redução de {diff_prazo:.1f} dias"
+    elif diff_prazo < -0.05:
+        acao = f"Aumento de {-diff_prazo:.1f} dias"
+    else:
+        acao = "Manter cenário"
+
     return pd.Series({
-        'Transportadora Anterior': lider_ant, 'Prazo Transportadora Anterior': mp('Prazo Transportadora Anterior', peso_ant, vol_ant_total), 
+        'Transportadora Anterior': lider_ant, 'Prazo Transportadora Anterior': prazo_ant, 
         'qtd pedidos transp anterior': vol_ant_total, 'CMU transportadora atual': mp('CMU transportadora atual', peso_ant, vol_ant_total), 
-        'Transportadora Selecionada': lider_sel, 'Prazo Transportadora Selecionada': mp('Prazo Transportadora Selecionada', peso_sel, vol_sel_total),
+        'Transportadora Selecionada': lider_sel, 'Prazo Transportadora Selecionada': prazo_sel,
         'Qtd Pedidos Transportadora Selecionada': vol_sel_total, 'CMU transportadora selecionada': mp('CMU transportadora selecionada', peso_sel, vol_sel_total),
         'NS Atual': mp('NS Atual', peso_sel, vol_sel_total), 'NS Projetado': mp('NS Projetado', peso_sel, vol_sel_total), 
-        'Ação Sugerida': "Otimizado"
+        'Ação Sugerida': acao
     })
 
 # ==========================================
@@ -202,7 +211,6 @@ if uploaded_file is not None:
         for base_c in cep_pareto_base:
             c = base_c.copy()
             ideal_idx = len(c['pareto']) - 1
-            # Busca estritamente o cenário que bate a meta (já minimizando prazo e cmu via Pareto)
             for i, s in enumerate(c['pareto']):
                 if s['ns'] >= (meta_ns * 100):
                     ideal_idx = i
@@ -214,11 +222,10 @@ if uploaded_file is not None:
         if vol_total_geral > 0:
             current_prazo_sum = sum(c['pareto'][c['curr_idx']]['prazo'] * c['vol_total'] for c in cep_data_list)
             
-            # Lógica baseada no botão selecionado
             if st.session_state.prioridade == "NS":
-                target_prazo_sum = float('inf') # Ignora o limite de prazo global (foco total em NS)
+                target_prazo_sum = float('inf') 
             else:
-                target_prazo_sum = limite_prazo * vol_total_geral # Respeita a meta rigorosa de Prazo
+                target_prazo_sum = limite_prazo * vol_total_geral
             
             if current_prazo_sum > target_prazo_sum:
                 heap = []
@@ -228,7 +235,6 @@ if uploaded_file is not None:
                         curr_s, prev_s = c['pareto'][idx], c['pareto'][idx - 1]
                         days_saved = curr_s['prazo'] - prev_s['prazo']
                         if days_saved > 0:
-                            # Menor impacto no NS por dia ganho
                             metric = (curr_s['ns'] - prev_s['ns']) / days_saved
                             heapq.heappush(heap, (metric, -c['vol_total'], list_i, idx))
                 
@@ -249,6 +255,15 @@ if uploaded_file is not None:
         for c in cep_data_list:
             sel = c['pareto'][c['curr_idx']]
             diff_prazo = c['prazo_ant'] - sel['prazo']
+            
+            # Nova lógica para o nível de CEP (Calcula exato Redução ou Aumento)
+            if diff_prazo > 0:
+                acao_cep = f"Redução de {diff_prazo:.1f} dias"
+            elif diff_prazo < 0:
+                acao_cep = f"Aumento de {-diff_prazo:.1f} dias"
+            else:
+                acao_cep = "Manter cenário"
+
             rows_out.append({
                 'CEP': c['cep'], 'Região': c['regiao'], 'UF': c['uf'], 'Cidade': c['cidade'], 'Cidade_Norm': c['cidade_norm'],
                 'Transportadora Anterior': c['transp_ant'], 'Prazo Transportadora Anterior': c['prazo_ant'],
@@ -256,24 +271,22 @@ if uploaded_file is not None:
                 'Transportadora Selecionada': sel['transp'], 'Prazo Transportadora Selecionada': sel['prazo'],
                 'Qtd Pedidos Transportadora Selecionada': c['vol_total'], 'CMU transportadora selecionada': sel['cmu'],
                 'NS Atual': sel['ns_atual'], 'NS Projetado': sel['ns'], 
-                'Ação Sugerida': f"Redução de {diff_prazo:.1f} dias" if diff_prazo > 0 else "Manter/Aumentar"
+                'Ação Sugerida': acao_cep
             })
             
         df_cep = pd.DataFrame(rows_out)
         
-        # Agregações Nível Região, UF e Cidade
+        # Agregações Nível Região, UF e Cidade (Agora rodando a função executiva com os cálculos corrigidos de Ação)
         df_regiao = df_cep.groupby('Região', group_keys=False).apply(calcular_agregacao_executiva).reset_index()
         df_uf = df_cep.groupby('UF', group_keys=False).apply(calcular_agregacao_executiva).reset_index()
         df_cidade = df_cep.groupby(['UF', 'Cidade'], group_keys=False).apply(calcular_agregacao_executiva).reset_index()
 
-        # Extraindo Tabela das Capitais
         df_cep_capitais = df_cep[df_cep['Cidade_Norm'].isin(normalizar_texto(c) for c in CAPITAIS_BR)]
         if not df_cep_capitais.empty:
             df_capitais = df_cep_capitais.groupby(['UF', 'Cidade'], group_keys=False).apply(calcular_agregacao_executiva).reset_index()
         else:
             df_capitais = pd.DataFrame()
 
-        # Totais Globais
         prazo_ant = (df_cep['Prazo Transportadora Anterior'] * df_cep['qtd pedidos transp anterior']).sum() / vol_total_geral
         prazo_sel = (df_cep['Prazo Transportadora Selecionada'] * df_cep['Qtd Pedidos Transportadora Selecionada']).sum() / vol_total_geral
         ns_atual = (df_cep['NS Atual'] * df_cep['qtd pedidos transp anterior']).sum() / vol_total_geral
@@ -283,9 +296,6 @@ if uploaded_file is not None:
 
     st.success(f'Otimização concluída com foco em {st.session_state.prioridade}!')
     
-    # ------------------------------------------
-    # VISUALIZAÇÃO GERAL
-    # ------------------------------------------
     st.subheader("🌐 Resultados Globais da Otimização")
     col1, col2, col3 = st.columns(3)
     col1.metric("Prazo Médio Global", f"{prazo_sel:.2f} d", f"{prazo_sel - prazo_ant:.2f} d", delta_color="inverse")
@@ -294,9 +304,6 @@ if uploaded_file is not None:
 
     st.markdown("---")
 
-    # ------------------------------------------
-    # VISUALIZAÇÃO CAPITAIS (NOVA)
-    # ------------------------------------------
     if not df_capitais.empty:
         st.subheader("🏙️ Detalhamento das Capitais (Antes vs Depois)")
         df_capitais_view = df_capitais[[
@@ -304,7 +311,6 @@ if uploaded_file is not None:
             'NS Atual', 'NS Projetado', 'CMU transportadora atual', 'CMU transportadora selecionada'
         ]].copy()
         
-        # Formatação para tela
         df_capitais_view.rename(columns={
             'Prazo Transportadora Anterior': 'Prazo (Antes)', 'Prazo Transportadora Selecionada': 'Prazo (Depois)',
             'CMU transportadora atual': 'CMU (Antes)', 'CMU transportadora selecionada': 'CMU (Depois)'
@@ -320,9 +326,6 @@ if uploaded_file is not None:
         )
         st.markdown("---")
 
-    # ------------------------------------------
-    # EXPORTAÇÃO EXCEL
-    # ------------------------------------------
     cols_padrao = [
         'Transportadora Anterior', 'Prazo Transportadora Anterior', 'qtd pedidos transp anterior',
         'CMU transportadora atual', 'Transportadora Selecionada', 'Prazo Transportadora Selecionada',
@@ -335,7 +338,7 @@ if uploaded_file is not None:
         df_cep.drop(columns=['Cidade_Norm']).to_excel(writer, sheet_name='Detalhado_CEP', index=False)
         df_regiao[['Região'] + cols_padrao].to_excel(writer, sheet_name='Analise_Regiao', index=False)
         df_uf[['UF'] + cols_padrao].to_excel(writer, sheet_name='Analise_UF', index=False)
-        df_cidade[['UF', 'Cidade'] + cols_padrao].to_excel(writer, sheet_name='Analise_Cidade', index=False) # Adicionado nível cidade!
+        df_cidade[['UF', 'Cidade'] + cols_padrao].to_excel(writer, sheet_name='Analise_Cidade', index=False)
     
     st.download_button(
         label="📥 Baixar Planilha de Resultados Otimizados",
