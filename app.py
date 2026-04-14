@@ -3,6 +3,7 @@ import pandas as pd
 import io
 import heapq
 import itertools
+import unicodedata
 
 # Configuração da página
 st.set_page_config(page_title="Otimização de Malha", layout="wide")
@@ -15,6 +16,7 @@ if 'prioridade' not in st.session_state:
     st.session_state.prioridade = "NS"
 
 st.sidebar.header("🎯 Parâmetros de Otimização")
+
 st.sidebar.subheader("🚀 Estratégia do Motor")
 col_btn_ns, col_btn_prz = st.sidebar.columns(2)
 
@@ -30,27 +32,18 @@ st.write(f"Faça o upload da sua planilha CSV para gerar os cenários otimizados
 
 meta_ns = st.sidebar.number_input(
     "Meta de Nível de Serviço (%)", 
-    min_value=0.0, 
-    max_value=100.0, 
-    value=95.0, 
-    step=0.1,
-    format="%.2f",
-    help="Digite o valor exato da meta de Nível de Serviço. Aceita casas decimais (ex: 95.5)."
+    min_value=0.0, max_value=100.0, value=95.0, step=0.1, format="%.2f"
 ) / 100.0
 
 limite_prazo = st.sidebar.number_input(
-    "Prazo Máximo Aceitável (Média Ponderada)", 
-    min_value=1.0, 
-    value=7.0, 
-    step=0.1, 
-    format="%.2f",
-    help="No modo 'Prazo', o motor sacrificará o NS apenas onde o impacto for menor para atingir esta média."
+    "Prazo Máximo Aceitável (Média Global)", 
+    min_value=1.0, value=7.0, step=0.1, format="%.2f"
 )
 
 if st.session_state.prioridade == "NS":
-    st.sidebar.info(f"O motor garantirá **{meta_ns*100:.2f}% de NS**. O prazo médio será o melhor possível dentro desta meta, sem reduções forçadas.")
+    st.sidebar.info(f"O motor focará **100% em atingir {meta_ns*100:.2f}% de NS**, selecionando sempre o cenário com o menor impacto possível no Prazo e no CMU para essa meta.")
 else:
-    st.sidebar.info(f"O motor tentará o NS de **{meta_ns*100:.2f}%**, mas se a média global passar de **{limite_prazo:.2f} dias**, ele priorizará a redução do prazo.")
+    st.sidebar.info(f"O motor focará em cravar o prazo máximo de **{limite_prazo:.2f} dias**, sacrificando o NS apenas onde houver o menor impacto estatístico, protegendo o CMU.")
 
 # ==========================================
 # 1. CONFIGURAÇÕES E LIMITES DE NEGÓCIO
@@ -70,20 +63,25 @@ CENARIOS = [
     {'coluna': 'NS (+3 dias)', 'ajuste': 3}
 ]
 
-CAPITAIS = [
-    'SÃO PAULO', 'RIO DE JANEIRO', 'BELO HORIZONTE', 'VITÓRIA', 'CURITIBA', 'FLORIANÓPOLIS', 'PORTO ALEGRE',
-    'GOIÂNIA', 'BRASÍLIA', 'CUIABÁ', 'CAMPO GRANDE', 'SALVADOR', 'ARACAJU', 'MACEIÓ', 'RECIFE', 'JOÃO PESSOA',
-    'NATAL', 'FORTALEZA', 'TERESINA', 'SÃO LUÍS', 'PALMAS', 'BELÉM', 'MACAPÁ', 'MANAUS', 'BOA VISTA', 
-    'PORTO VELHO', 'RIO BRANCO'
+# Lista padrão de capitais brasileiras para filtragem cega
+CAPITAIS_BR = [
+    "SÃO PAULO", "RIO DE JANEIRO", "BELO HORIZONTE", "VITÓRIA", "CURITIBA",
+    "FLORIANÓPOLIS", "PORTO ALEGRE", "CAMPO GRANDE", "CUIABÁ", "GOIÂNIA",
+    "BRASÍLIA", "SALVADOR", "ARACAJU", "MACEIÓ", "RECIFE", "JOÃO PESSOA",
+    "NATAL", "FORTALEZA", "TERESINA", "SÃO LUÍS", "PALMAS", "BELÉM",
+    "MACAPÁ", "BOA VISTA", "MANAUS", "RIO BRANCO", "PORTO VELHO"
 ]
+
+def normalizar_texto(txt):
+    """Remove acentos e deixa maiúsculo para garantir o match das capitais"""
+    if pd.isna(txt): return ""
+    return ''.join(c for c in unicodedata.normalize('NFD', str(txt)) if unicodedata.category(c) != 'Mn').upper()
 
 # ==========================================
 # FUNÇÕES DE CACHE E OTIMIZAÇÃO BLINDADAS
 # ==========================================
-
 def limpar_coluna_segura(serie):
-    if pd.api.types.is_numeric_dtype(serie):
-        return serie.fillna(0.0)
+    if pd.api.types.is_numeric_dtype(serie): return serie.fillna(0.0)
     s = serie.astype(str).str.replace(r'[R\$\%\s]', '', regex=True)
     mask = s.str.contains(',')
     s.loc[mask] = s.loc[mask].str.replace('.', '', regex=False).str.replace(',', '.', regex=False)
@@ -98,18 +96,18 @@ def carregar_e_limpar_dados(uploaded_file):
     for col in colunas_ns + ['NS Atual']:
         if col in df.columns:
             df[col] = limpar_coluna_segura(df[col])
-            if 0 < df[col].max() <= 1.0:
-                df[col] = df[col] * 100
+            if 0 < df[col].max() <= 1.0: df[col] = df[col] * 100
 
     for col in ['CMU', col_prazo]:
-        if col in df.columns:
-            df[col] = limpar_coluna_segura(df[col])
+        if col in df.columns: df[col] = limpar_coluna_segura(df[col])
             
     if 'Qtd Pedidos' in df.columns:
         df['Qtd Pedidos'] = pd.to_numeric(df['Qtd Pedidos'], errors='coerce').fillna(0)
 
     if col_prazo in df.columns and col_prazo != 'Prazo Prometido':
         df['Prazo Prometido'] = df[col_prazo]
+        
+    df['Cidade_Norm'] = df.get('Cidade', '').apply(normalizar_texto)
     return df
 
 @st.cache_data(show_spinner=False)
@@ -147,6 +145,7 @@ def mapear_pareto_base(df):
                        'cmu': transp_ant_row['CMU'], 'transp': transp_ant_row['Transportador'], 
                        'ns_atual': transp_ant_row['NS Atual'], 'ajuste': 0}]
         else:
+            # A ordenação inicial já garante o MENOR prazo e MENOR CMU para o mesmo NS
             valid_scenarios.sort(key=lambda x: (x['prazo'], -x['ns'], x['cmu']))
             pareto = []
             best_ns_so_far = -1
@@ -157,9 +156,10 @@ def mapear_pareto_base(df):
                     
         cep_pareto_list.append({
             'cep': cep, 'regiao': transp_ant_row['Região'], 'uf': uf, 'cidade': transp_ant_row['Cidade'], 
-            'vol_total': vol_total_cep, 'transp_ant': transp_ant_row['Transportador'], 
-            'prazo_ant': transp_ant_row['Prazo Prometido'], 'qtd_ant': transp_ant_row['Qtd Pedidos'], 
-            'cmu_ant': transp_ant_row['CMU'], 'ns_atual_ant': transp_ant_row['NS Atual'], 'pareto': pareto
+            'cidade_norm': transp_ant_row['Cidade_Norm'], 'vol_total': vol_total_cep, 
+            'transp_ant': transp_ant_row['Transportador'], 'prazo_ant': transp_ant_row['Prazo Prometido'], 
+            'qtd_ant': transp_ant_row['Qtd Pedidos'], 'cmu_ant': transp_ant_row['CMU'], 
+            'ns_atual_ant': transp_ant_row['NS Atual'], 'pareto': pareto
         })
     return cep_pareto_list
 
@@ -202,6 +202,7 @@ if uploaded_file is not None:
         for base_c in cep_pareto_base:
             c = base_c.copy()
             ideal_idx = len(c['pareto']) - 1
+            # Busca estritamente o cenário que bate a meta (já minimizando prazo e cmu via Pareto)
             for i, s in enumerate(c['pareto']):
                 if s['ns'] >= (meta_ns * 100):
                     ideal_idx = i
@@ -213,10 +214,11 @@ if uploaded_file is not None:
         if vol_total_geral > 0:
             current_prazo_sum = sum(c['pareto'][c['curr_idx']]['prazo'] * c['vol_total'] for c in cep_data_list)
             
+            # Lógica baseada no botão selecionado
             if st.session_state.prioridade == "NS":
-                target_prazo_sum = float('inf') 
+                target_prazo_sum = float('inf') # Ignora o limite de prazo global (foco total em NS)
             else:
-                target_prazo_sum = limite_prazo * vol_total_geral 
+                target_prazo_sum = limite_prazo * vol_total_geral # Respeita a meta rigorosa de Prazo
             
             if current_prazo_sum > target_prazo_sum:
                 heap = []
@@ -226,6 +228,7 @@ if uploaded_file is not None:
                         curr_s, prev_s = c['pareto'][idx], c['pareto'][idx - 1]
                         days_saved = curr_s['prazo'] - prev_s['prazo']
                         if days_saved > 0:
+                            # Menor impacto no NS por dia ganho
                             metric = (curr_s['ns'] - prev_s['ns']) / days_saved
                             heapq.heappush(heap, (metric, -c['vol_total'], list_i, idx))
                 
@@ -247,7 +250,7 @@ if uploaded_file is not None:
             sel = c['pareto'][c['curr_idx']]
             diff_prazo = c['prazo_ant'] - sel['prazo']
             rows_out.append({
-                'CEP': c['cep'], 'Região': c['regiao'], 'UF': c['uf'], 'Cidade': c['cidade'],
+                'CEP': c['cep'], 'Região': c['regiao'], 'UF': c['uf'], 'Cidade': c['cidade'], 'Cidade_Norm': c['cidade_norm'],
                 'Transportadora Anterior': c['transp_ant'], 'Prazo Transportadora Anterior': c['prazo_ant'],
                 'qtd pedidos transp anterior': c['qtd_ant'], 'CMU transportadora atual': c['cmu_ant'],
                 'Transportadora Selecionada': sel['transp'], 'Prazo Transportadora Selecionada': sel['prazo'],
@@ -258,59 +261,85 @@ if uploaded_file is not None:
             
         df_cep = pd.DataFrame(rows_out)
         
-        # Agregações
+        # Agregações Nível Região, UF e Cidade
         df_regiao = df_cep.groupby('Região', group_keys=False).apply(calcular_agregacao_executiva).reset_index()
+        df_uf = df_cep.groupby('UF', group_keys=False).apply(calcular_agregacao_executiva).reset_index()
         df_cidade = df_cep.groupby(['UF', 'Cidade'], group_keys=False).apply(calcular_agregacao_executiva).reset_index()
-        
-        # Filtro de Capitais para a Tela
-        df_cidade['Cidade_Upper'] = df_cidade['Cidade'].astype(str).str.upper()
-        df_capitais = df_cidade[df_cidade['Cidade_Upper'].isin(CAPITAIS)].copy()
-        
-        # Visão global
+
+        # Extraindo Tabela das Capitais
+        df_cep_capitais = df_cep[df_cep['Cidade_Norm'].isin(normalizar_texto(c) for c in CAPITAIS_BR)]
+        if not df_cep_capitais.empty:
+            df_capitais = df_cep_capitais.groupby(['UF', 'Cidade'], group_keys=False).apply(calcular_agregacao_executiva).reset_index()
+        else:
+            df_capitais = pd.DataFrame()
+
+        # Totais Globais
         prazo_ant = (df_cep['Prazo Transportadora Anterior'] * df_cep['qtd pedidos transp anterior']).sum() / vol_total_geral
         prazo_sel = (df_cep['Prazo Transportadora Selecionada'] * df_cep['Qtd Pedidos Transportadora Selecionada']).sum() / vol_total_geral
+        ns_atual = (df_cep['NS Atual'] * df_cep['qtd pedidos transp anterior']).sum() / vol_total_geral
         ns_proj = (df_cep['NS Projetado'] * df_cep['Qtd Pedidos Transportadora Selecionada']).sum() / vol_total_geral
+        cmu_ant = (df_cep['CMU transportadora atual'] * df_cep['qtd pedidos transp anterior']).sum() / vol_total_geral
         cmu_sel = (df_cep['CMU transportadora selecionada'] * df_cep['Qtd Pedidos Transportadora Selecionada']).sum() / vol_total_geral
 
     st.success(f'Otimização concluída com foco em {st.session_state.prioridade}!')
     
-    st.subheader("🌎 Resultados Globais")
+    # ------------------------------------------
+    # VISUALIZAÇÃO GERAL
+    # ------------------------------------------
+    st.subheader("🌐 Resultados Globais da Otimização")
     col1, col2, col3 = st.columns(3)
     col1.metric("Prazo Médio Global", f"{prazo_sel:.2f} d", f"{prazo_sel - prazo_ant:.2f} d", delta_color="inverse")
-    col2.metric("NS Ponderado", f"{ns_proj:.1f}%")
-    col3.metric("CMU Médio", f"R$ {cmu_sel:.2f}")
+    col2.metric("NS Ponderado", f"{ns_proj:.1f}%", f"{ns_proj - ns_atual:.1f}%", delta_color="normal")
+    col3.metric("CMU Médio", f"R$ {cmu_sel:.2f}", f"R$ {cmu_sel - cmu_ant:.2f}", delta_color="inverse")
 
     st.markdown("---")
-    
-    # Exibição das Capitais na Tela
-    if not df_capitais.empty:
-        st.subheader("🏙️ Detalhamento Antes e Depois - Capitais")
-        
-        # Formatando a tabela para exibição na tela
-        cols_tela = [
-            'UF', 'Cidade', 'Prazo Transportadora Anterior', 'Prazo Transportadora Selecionada',
-            'NS Atual', 'NS Projetado', 'CMU transportadora atual', 'CMU transportadora selecionada'
-        ]
-        
-        df_capitais_display = df_capitais[cols_tela].rename(columns={
-            'Prazo Transportadora Anterior': 'Prazo Antigo',
-            'Prazo Transportadora Selecionada': 'Novo Prazo',
-            'CMU transportadora atual': 'CMU Antigo',
-            'CMU transportadora selecionada': 'Novo CMU'
-        })
-        
-        # Arredondando os valores para ficar visualmente limpo no app
-        df_capitais_display = df_capitais_display.round({
-            'Prazo Antigo': 1, 'Novo Prazo': 1, 'NS Atual': 1, 'NS Projetado': 1, 'CMU Antigo': 2, 'Novo CMU': 2
-        })
-        
-        st.dataframe(df_capitais_display, use_container_width=True, hide_index=True)
 
-    # Preparação para Download
+    # ------------------------------------------
+    # VISUALIZAÇÃO CAPITAIS (NOVA)
+    # ------------------------------------------
+    if not df_capitais.empty:
+        st.subheader("🏙️ Detalhamento das Capitais (Antes vs Depois)")
+        df_capitais_view = df_capitais[[
+            'UF', 'Cidade', 'Prazo Transportadora Anterior', 'Prazo Transportadora Selecionada', 
+            'NS Atual', 'NS Projetado', 'CMU transportadora atual', 'CMU transportadora selecionada'
+        ]].copy()
+        
+        # Formatação para tela
+        df_capitais_view.rename(columns={
+            'Prazo Transportadora Anterior': 'Prazo (Antes)', 'Prazo Transportadora Selecionada': 'Prazo (Depois)',
+            'CMU transportadora atual': 'CMU (Antes)', 'CMU transportadora selecionada': 'CMU (Depois)'
+        }, inplace=True)
+        
+        st.dataframe(
+            df_capitais_view.style.format({
+                'Prazo (Antes)': "{:.1f}", 'Prazo (Depois)': "{:.1f}", 
+                'NS Atual': "{:.1f}%", 'NS Projetado': "{:.1f}%", 
+                'CMU (Antes)': "R$ {:.2f}", 'CMU (Depois)': "R$ {:.2f}"
+            }), 
+            use_container_width=True
+        )
+        st.markdown("---")
+
+    # ------------------------------------------
+    # EXPORTAÇÃO EXCEL
+    # ------------------------------------------
+    cols_padrao = [
+        'Transportadora Anterior', 'Prazo Transportadora Anterior', 'qtd pedidos transp anterior',
+        'CMU transportadora atual', 'Transportadora Selecionada', 'Prazo Transportadora Selecionada',
+        'Qtd Pedidos Transportadora Selecionada', 'CMU transportadora selecionada',
+        'NS Atual', 'NS Projetado', 'Ação Sugerida'
+    ]
+
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        df_cep.to_excel(writer, sheet_name='Detalhado_CEP', index=False)
-        df_cidade.drop(columns=['Cidade_Upper'], errors='ignore').to_excel(writer, sheet_name='Por_Cidade', index=False)
-        df_regiao.to_excel(writer, sheet_name='Por_Regiao', index=False)
+        df_cep.drop(columns=['Cidade_Norm']).to_excel(writer, sheet_name='Detalhado_CEP', index=False)
+        df_regiao[['Região'] + cols_padrao].to_excel(writer, sheet_name='Analise_Regiao', index=False)
+        df_uf[['UF'] + cols_padrao].to_excel(writer, sheet_name='Analise_UF', index=False)
+        df_cidade[['UF', 'Cidade'] + cols_padrao].to_excel(writer, sheet_name='Analise_Cidade', index=False) # Adicionado nível cidade!
     
-    st.download_button("📥 Baixar Planilha Completa (Com Nível Cidade)", data=buffer.getvalue(), file_name="otimizacao.xlsx")
+    st.download_button(
+        label="📥 Baixar Planilha de Resultados Otimizados",
+        data=buffer.getvalue(),
+        file_name=f"Otimizacao_Foco_{st.session_state.prioridade}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
