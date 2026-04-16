@@ -193,7 +193,7 @@ if uploaded_file is not None:
     df = carregar_e_limpar_dados(uploaded_file)
     cep_pareto_base = mapear_pareto_base(df)
 
-    # Lógica de Otimização (Similiar ao anterior mas focada no funil)
+    # Lógica de Otimização
     cep_data_list = []
     vol_total_geral = 0
     for base_c in cep_pareto_base:
@@ -270,15 +270,21 @@ if uploaded_file is not None:
         use_container_width=True
     )
 
-    # Download
+    # ==========================================
+    # EXPORTAÇÃO E DOWNLOAD
+    # ==========================================
     buffer = io.BytesIO()
     with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-        df_cep_final.to_excel(writer, sheet_name='Base_CEP', index=False)
-        df_display.to_excel(writer, sheet_name=f'Analise_{nivel_analise}', index=False)
+        # 1. Salva a visão do FUNIL selecionado como a PRIMEIRA aba
+        df_display.to_excel(writer, sheet_name=f'Visao_{nivel_analise}', index=False)
+        
+        # 2. Salva a base detalhada na segunda aba (como histórico/auditoria)
+        if nivel_analise != "CEP":
+            df_cep_final.to_excel(writer, sheet_name='Base_CEP_Detalhada', index=False)
     
     st.download_button(
-        label=f"📥 Baixar Resultados ({nivel_analise})",
+        label=f"📥 Baixar Relatório - Nível {nivel_analise}",
         data=buffer.getvalue(),
-        file_name=f"Otimizacao_{nivel_analise}.xlsx",
+        file_name=f"Otimizacao_Malha_{nivel_analise}.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
