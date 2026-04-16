@@ -261,7 +261,7 @@ if uploaded_file is not None:
         return ''
 
     st.dataframe(
-        df_display.style.applymap(color_acao, subset=['Ação Sugerida'])
+        df_display.style.map(color_acao, subset=['Ação Sugerida'])
         .format({
             'Prazo Antes': "{:.2f}", 'Prazo Depois': "{:.2f}",
             'NS Antes': "{:.1f}%", 'NS Depois': "{:.1f}%",
